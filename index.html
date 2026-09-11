@@ -159,10 +159,31 @@
 
 <script type="module">
 import { FFmpeg } from "https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.15/+esm";
-import { fetchFile } from "https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.2/+esm";
+import { fetchFile, toBlobURL } from "https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.2/+esm";
 import JSZip from "https://cdn.jsdelivr.net/npm/jszip@3.10.1/+esm";
 
-const FFMPEG_CORE_BASE = "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd";
+// Must be the ESM core build: the worker loads it via dynamic import() (module
+// worker context can't use importScripts), which requires a real ES module
+// (the UMD build has no `export default` and fails that import).
+const FFMPEG_CORE_BASE = "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.9/dist/esm";
+const FFMPEG_ESM_BASE = "https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.15/dist/esm";
+
+// The worker script must be loaded from a blob: URL (a same-origin Worker is
+// required; the CDN origin is cross-origin and browsers refuse to construct a
+// Worker from a cross-origin script URL). But dist/esm/worker.js imports two
+// sibling files via relative specifiers ("./const.js", "./errors.js") that
+// cannot resolve once the script is loaded from a blob: URL (blob URLs have no
+// base path for relative imports to resolve against). So we fetch all three
+// files and splice them into one self-contained module before blobbing it.
+async function buildFfmpegWorkerBlobURL() {
+  const [workerSrc, constSrc, errorsSrc] = await Promise.all(
+    ["worker.js", "const.js", "errors.js"].map(f => fetch(`${FFMPEG_ESM_BASE}/${f}`).then(r => r.text()))
+  );
+  const stripExport = s => s.replace(/^export\s+/gm, "");
+  const stripImport = s => s.replace(/^import\s+.*from\s+["'].*["'];?\s*$/gm, "");
+  const combined = `${stripExport(constSrc)}\n${stripExport(errorsSrc)}\n${stripImport(workerSrc)}`;
+  return URL.createObjectURL(new Blob([combined], { type: "text/javascript" }));
+}
 
 const VIDEO_EXTS = ["mp4", "mov", "avi", "mkv", "flv", "wmv", "m4v", "webm"];
 const IMAGE_EXTS = ["jpg", "jpeg", "png", "webp"];
@@ -178,7 +199,12 @@ const VIDEO_PRESETS = {
   m4v:  { vcodec: "libx264",  acodec: "aac",         crfMax: 51, speedParam: "preset", speedValues: ["veryslow","slow","medium","fast","veryfast","ultrafast"] },
   mov:  { vcodec: "libx264",  acodec: "aac",         crfMax: 51, speedParam: "preset", speedValues: ["veryslow","slow","medium","fast","veryfast","ultrafast"] },
   mkv:  { vcodec: "libx264",  acodec: "aac",         crfMax: 51, speedParam: "preset", speedValues: ["veryslow","slow","medium","fast","veryfast","ultrafast"] },
-  webm: { vcodec: "libvpx-vp9", acodec: "libopus",   crfMax: 63, speedParam: "speed",  speedValues: ["0","1","2","3","4","5"] },
+  // libvpx-vp9 reliably crashes ("memory access out of bounds") in every current
+  // @ffmpeg/core build (confirmed against 0.12.6/0.12.9/0.12.10) — an upstream
+  // ffmpeg.wasm bug, not a config issue. VP8 (still a valid WebM codec) works fine,
+  // so the browser version encodes WebM as VP8+Opus. The desktop app uses real
+  // system ffmpeg and is unaffected, so it still encodes WebM as VP9+Opus.
+  webm: { vcodec: "libvpx", acodec: "libopus",   crfMax: 63, speedParam: "speed",  speedValues: ["0","1","2","3","4","5"] },
   avi:  { vcodec: "mpeg4",     acodec: "libmp3lame", qscaleMax: 31, speedParam: null },
   flv:  { vcodec: "flv",       acodec: "libmp3lame", qscaleMax: 31, speedParam: null },
   wmv:  { vcodec: "wmv2",      acodec: "wmav2",      qscaleMax: 31, speedParam: null },
@@ -422,8 +448,9 @@ async function getFFmpeg() {
     const instance = new FFmpeg();
     instance.on("log", ({ message }) => log("  ffmpeg: " + message));
     await instance.load({
-      coreURL: `${FFMPEG_CORE_BASE}/ffmpeg-core.js`,
-      wasmURL: `${FFMPEG_CORE_BASE}/ffmpeg-core.wasm`,
+      coreURL: await toBlobURL(`${FFMPEG_CORE_BASE}/ffmpeg-core.js`, "text/javascript"),
+      wasmURL: await toBlobURL(`${FFMPEG_CORE_BASE}/ffmpeg-core.wasm`, "application/wasm"),
+      classWorkerURL: await buildFfmpegWorkerBlobURL(),
     });
     log(t("log_ffmpeg_ready"));
     ff = instance;
@@ -438,7 +465,7 @@ function buildFfmpegArgs(inName, outName, targetExt, quality, speedIndex, audioB
   if (preset.crfMax) {
     const crf = Math.round((100 - quality) / 100 * preset.crfMax);
     args.push("-crf", String(crf));
-    if (preset.vcodec === "libvpx-vp9") args.push("-b:v", "0", "-row-mt", "1");
+    if (preset.vcodec === "libvpx-vp9" || preset.vcodec === "libvpx") args.push("-b:v", "0", "-row-mt", "1");
   } else if (preset.qscaleMax) {
     const q = Math.max(1, Math.round((100 - quality) / 100 * preset.qscaleMax));
     args.push("-q:v", String(q));

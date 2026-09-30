@@ -228,12 +228,13 @@ async function buildFfmpegWorkerBlobURL() {
 }
 
 const VIDEO_EXTS = ["mp4", "mov", "avi", "mkv", "flv", "wmv", "m4v", "webm"];
-const IMAGE_EXTS = ["jpg", "jpeg", "png", "webp"];
+const IMAGE_EXTS = ["jpg", "jpeg", "png", "webp", "avif"];
+const IMAGE_TARGET_EXTS = ["jpg", "png", "webp"]; // avif is input-only: no browser can encode canvas -> avif yet
 
 const MIME = {
   mp4: "video/mp4", mov: "video/quicktime", mkv: "video/x-matroska", webm: "video/webm",
   avi: "video/x-msvideo", flv: "video/x-flv", wmv: "video/x-ms-wmv", m4v: "video/x-m4v",
-  jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", webp: "image/webp",
+  jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", webp: "image/webp", avif: "image/avif",
 };
 
 const VIDEO_PRESETS = {
@@ -368,7 +369,7 @@ function log(msg) {
 }
 
 function buildFormatOptions() {
-  const exts = mode === "video" ? VIDEO_EXTS : ["jpg", "png", "webp"];
+  const exts = mode === "video" ? VIDEO_EXTS : IMAGE_TARGET_EXTS;
   const prev = targetFormatEl.value;
   targetFormatEl.innerHTML = exts.map(e => `<option value="${e}">${e}</option>`).join("");
   targetFormatEl.value = exts.includes(prev) ? prev : (mode === "video" ? "webm" : "webp");
